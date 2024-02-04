@@ -74,16 +74,65 @@ class ContextNetwork(tf.keras.layers.Layer):
 
         return self.gelu(out2)
 
-# Example Usage:
-# Assuming input_data is your input data
-input_data = tf.random.normal(())#batch_size=3, sequence_length=120, input_channels))
+class QuantizationModule(tf.keras.layers.Layer):
+    def __init__(self, num_codebooks, num_entries_per_codebook, temperature=1.0):
+        super(QuantizationModule).__init__()
+        self.num_codebooks = num_codebooks
+        self.num_entries_per_codebooks = num_entries_per_codebook
+        self.temperature = temperature
 
-# Creating instances of FeatureEncoder and ContextNetwork
-feature_encoder = FeatureEncoder(num_filters=64, kernel_size=3, strides=1)
-context_network = ContextNetwork(d_model=256, num_heads=4, ff_dim=512, dropout_rate=0.1)
+    def gumbel_softmax(self, logits, temperature=1.0, epsilon=1e-20):
+        # We set minval to epsilon so that we don't ever have to take the logarithm of 0
+        gumbel_distributed_noise = -tf.math.log(-tf.math.log(tf.random.uniform(tf.shape(logits), minval=epsilon, maxval=1.0)))
+        gumbel_logits = (logits + gumbel_distributed_noise) / temperature
+        softmax_probs = tf.nn.softmax(gumbel_logits, axis=-1)
+        return softmax_probs
 
-# Forward pass through the FeatureEncoder
-latent_speech_representations = feature_encoder(input_data)
+    def product_quantization(self, latent_representations, num_codebooks, num_entries_per_codebook):
+        # Split the latent representations into subspaces for each codebook
+        subspaces = tf.split(latent_representations, num_codebooks, axis=-1)
 
-# Forward pass through the ContextNetwork
-contextualized_representations = context_network(latent_speech_representations)
+        quantized_subspaces = []
+        for subspace in subspaces:
+            # Choose one entry from each codebook
+            codebook_entries = tf.split(subspace, num_entries_per_codebook, axis=-1)
+            selected_entries = [tf.math.reduce_mean(entry, axis=-1, keepdims=True) for entry in codebook_entries]
+
+            # Concatenate the selected entries
+            quantized_subspace = tf.concat(selected_entries, axis=-1)
+            quantized_subspaces.append(quantized_subspace)
+
+        # Concatenate quantized subspaces to get the final quantized representation
+        quantized_representation = tf.concat(quantized_subspaces, axis=-1)
+
+        return quantized_representation
+
+    def call(self, latent_representations, training=True):
+        # Apply product quantization
+        quantized_representation = self.product_quantization(latent_representations, self.num_codebooks,
+                                                        self.num_entries_per_codebook)
+
+        # Apply Gumbel softmax for differentiability during training
+        gumbel_probs = self.gumbel_softmax(quantized_representation, temperature=self.temperature)
+
+        return gumbel_probs
+
+def create_model():
+    T = 100  # number of time steps
+    input_feature_dim = 64  # feature dimension
+    num_codebooks = 4
+    num_entries_per_codebook = 8
+    temperature = 0.5
+
+    raw_audio_input = tf.keras.Input(shape=(T, input_feature_dim))
+    encoder_model = FeatureEncoder()
+    context_model = ContextNetwork()
+    quantization_model = QuantizationModule(num_codebooks=num_codebooks, num_entries_per_codebook=num_entries_per_codebook, temperature=temperature)
+
+    latent_representations = encoder_model(raw_audio_input)
+    contextualized_representations = context_model(latent_representations)
+    discretized_representations = quantization_model(latent_representations)
+
+    model_output = tf.keras.layers.Concatenate()([contextualized_representations, discretized_representations])
+
+    overall_model = tf.keras.Model(inputs=raw_audio_input, outputs=model_output)
