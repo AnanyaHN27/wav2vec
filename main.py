@@ -1,12 +1,10 @@
 import math
-
-import keras
 import tensorflow as tf
-from tensorflow.python.keras.models import Model
-import keras.layers as layers
 
+def gelu(x):
+    return 0.5 * x * (1 + tf.tanh(tf.sqrt(2 / tf.constant(math.pi, dtype=x.dtype)) * (x + 0.044715 * tf.pow(x, 3))))
 
-class FeatureEncoder(Model):
+class FeatureEncoder(tf.keras.Model):
     def __init__(self, num_filters, kernel_size, strides):
         super(FeatureEncoder, self).__init__()
         self.filters = num_filters
@@ -15,23 +13,10 @@ class FeatureEncoder(Model):
         self.encoder_blocks = [self.encoder_block() for _ in range(5)]
 
     def layer_norm(self):
-        # mean, var = tf.nn.moments(x, axes=-1, keepdims=True)
-        # gamma = tf.Variable(tf.ones_like(x))
-        # beta = tf.Variable(tf.zeros_like(x))
-        # x_norm = (x - mean) / tf.sqrt(var + epsilon)
-        # return gamma * x_norm + beta
-        return layers.LayerNormalization()
+        return tf.keras.layers.LayerNormalization()
 
     def temporal_conv(self):
-        """
-        :param filters: Number of filters
-        :param kernel_size: Size of the convolutional kernel
-        :param strides: Stride of the convolution
-        :param padding: Padding type
-        :param activation: Activation function to apply
-        :return: Convolutional layer
-        """
-        conv_layer = layers.Conv1D(
+        conv_layer = tf.keras.layers.Conv1D(
             filters=self.filters,
             kernel_size=self.kernel_size,
             strides=self.strides,
@@ -41,7 +26,7 @@ class FeatureEncoder(Model):
         return conv_layer
 
     def encoder_block(self):
-        return keras.Sequential([self.temporal_conv(), self.layer_norm()])
+        return tf.keras.Sequential([self.temporal_conv(), self.layer_norm()])
 
     def call(self, x):
         for block in self.encoder_blocks:
@@ -49,32 +34,28 @@ class FeatureEncoder(Model):
         return x
 
 
-def gelu(x):
-    return 0.5 * x * (1 + tf.tanh(tf.sqrt(2 / tf.constant(math.pi, dtype=x.dtype)) * (x + 0.044715 * tf.pow(x, 3))))
-
-
-class ContextNetwork(keras.layers.Layer):
+class ContextNetwork(tf.keras.layers.Layer):
     def __init__(self, d_model, num_heads, ff_dim, dropout_rate=0.1):
         super(ContextNetwork, self).__init__()
 
-        self.mha = keras.layers.MultiHeadAttention(
+        self.mha = tf.keras.layers.MultiHeadAttention(
             key_dim=d_model // num_heads,
             num_heads=num_heads,
             dropout=dropout_rate
         )
 
-        # In place of a positional embedding
-        self.ffn = keras.Sequential([
-            keras.layers.Conv1D(filters=ff_dim, kernel_size=1, activation='relu'),
-            keras.layers.LayerNormalization(),
-            keras.layers.Conv1D(filters=d_model, kernel_size=1)
+        # Instead of a positional embedding
+        self.ffn = tf.keras.Sequential([
+            tf.keras.layers.Conv1D(filters=ff_dim, kernel_size=1, activation='relu'),
+            tf.keras.layers.LayerNormalization(),
+            tf.keras.layers.Conv1D(filters=d_model, kernel_size=1)
         ])
 
-        self.dropout1 = keras.layers.Dropout(dropout_rate)
-        self.dropout2 = keras.layers.Dropout(dropout_rate)
+        self.dropout1 = tf.keras.layers.Dropout(dropout_rate)
+        self.dropout2 = tf.keras.layers.Dropout(dropout_rate)
 
-        self.layerNorm1 = keras.layers.LayerNormalization()
-        self.layerNorm2 = keras.layers.LayerNormalization()
+        self.layerNorm1 = tf.keras.layers.LayerNormalization()
+        self.layerNorm2 = tf.keras.layers.LayerNormalization()
 
         self.gelu = tf.keras.layers.Activation('gelu')
 
@@ -92,3 +73,17 @@ class ContextNetwork(keras.layers.Layer):
         out2 = self.layerNorm2(out1 + ffn_output)
 
         return self.gelu(out2)
+
+# Example Usage:
+# Assuming input_data is your input data
+input_data = tf.random.normal(())#batch_size=3, sequence_length=120, input_channels))
+
+# Creating instances of FeatureEncoder and ContextNetwork
+feature_encoder = FeatureEncoder(num_filters=64, kernel_size=3, strides=1)
+context_network = ContextNetwork(d_model=256, num_heads=4, ff_dim=512, dropout_rate=0.1)
+
+# Forward pass through the FeatureEncoder
+latent_speech_representations = feature_encoder(input_data)
+
+# Forward pass through the ContextNetwork
+contextualized_representations = context_network(latent_speech_representations)
